@@ -169,7 +169,7 @@ Split the summary into chunks and send each as a **separate `message` call**. Ru
 1. **First message**: one-line confirmation only → `"✅ Claude Code finished · [project name]"`
 2. **Body chunks**: split the summary by section headings (`##`, `###`) or at natural paragraph breaks — whichever comes first. Each chunk must be **≤ 500 characters**. If a single paragraph exceeds 500 characters, break it at the nearest sentence boundary.
 3. **Last message**: footer line only →
-   - discuss mode: `"Ready to start building? Reply and I'll kick off implementation."`
+   - discuss mode: omit the footer — do not add any fixed closing line; let the summary speak for itself and ask a natural follow-up question if appropriate
    - execute mode: `"Please verify the result in your project directory."`
    - on timeout: `"⏰ Task timed out (>30 min) — please split it into smaller subtasks and retry."`
 

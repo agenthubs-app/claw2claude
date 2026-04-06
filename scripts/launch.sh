@@ -180,7 +180,7 @@ SUMMARY_INSTRUCTION='
 IMPORTANT: At the very end of your response, write a section in this exact format:
 
 ---CHAT_SUMMARY_START---
-Write a thorough summary (200–500 words) of this session to be sent directly to the user as a chat message.
+Write a thorough summary (200–1000 words) of this session to be sent directly to the user as a chat message.
 
 Rules:
 1. Language: match the language the user used in their instruction. You may reason in any language, but the summary must be written in the same language as the user'\''s request.
