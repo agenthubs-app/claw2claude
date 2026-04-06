@@ -1,7 +1,7 @@
 ---
 name: claw2claude
 description: "Delegates tasks to the local Claude Code CLI. Activate immediately when the user asks for Claude, requests a stronger model, or mentions an existing project path. Ask the user first whether to create a Claude project when: the task involves building something from scratch, spans multiple parts, requires multiple rounds of iteration, or the user is expressing a direction rather than a concrete single question. Applies to code AND non-code work (business plans, product specs, docs, etc.). Do not start answering directly — ask first."
-license: MIT-0
+license: MIT
 metadata: {"openclaw": {"os": "darwin", "emoji": "🦞→🤖", "requires": {"bins": ["claude", "python3"]}}}
 ---
 
@@ -75,9 +75,9 @@ Before starting, ask the user whether to create a Claude project if any of the f
 | "Run it in the background" / "Don't wait, just let it run" | `background` |
 
 > ⚠️ **Use `execute`, not `continue`, when switching from discussion to implementation.**
-> `execute` automatically detects `LAST_MODE==discuss` and resumes the session with `--resume` to carry over the discussion context.
-> If the last session was also `execute`, no resume is applied — it starts fresh.
-> `continue` only resumes the same mode (discuss→discuss, execute→execute) without changing permissions.
+> `execute` always resumes the last session (`--resume`) if one exists, whether the previous mode was `discuss` or `execute`.
+> This keeps all messages to the same project in a single continuous session.
+> `continue` also resumes the same session but is reserved for explicit "pick up where we left off" requests.
 >
 > If the user says "continue" but also adds a new direction, use `execute` mode with the full structured prompt — not `continue`.
 
@@ -143,12 +143,13 @@ Requirements:
 
 Then run with the `exec` tool:
 ```bash
-"$SKILL_DIR/scripts/launch.sh" "<project_path>" "<mode>" "<prompt>"
+"$SKILL_DIR/scripts/launch.sh" "<project_path>" "<mode>" "<prompt>" "<session_key>"
 ```
 
 - `project_path`: absolute path — the script creates the directory and runs `git init` automatically
 - `mode`: `discuss` / `execute` / `continue` / `background`
 - `prompt`: the structured instruction built in Step 3. If the prompt contains double quotes, escape them as `\"` or wrap in single quotes.
+- `session_key`: **optional** — omit it and `launch.sh` will auto-detect the correct channel by finding the most recently active session in the sessions registry. Only pass it explicitly if auto-detection picks the wrong channel.
 
 **background mode**: the script returns immediately; Claude runs in the background. Tell the user:
 `"🚀 Claude Code is running in the background. You'll be notified automatically when it's done."`
@@ -161,16 +162,27 @@ The exec result already contains a **structured summary written by Claude** (ext
 
 The exec call may have taken several minutes and the channel connection may be stale. **Always use the `message` tool explicitly** to guarantee delivery — do not rely on turn-response auto-routing.
 
-```
-message(action="send", text="✅ Claude Code finished.\n\n<summary from exec output>")
-```
+### Chunked delivery (required — do not send in one message)
 
-Do not rewrite or expand the summary — Claude already wrote it concisely. Just prepend a one-line confirmation and send.
+Split the summary into chunks and send each as a **separate `message` call**. Rules:
 
-Additionally:
-- **After discuss mode**: append "Ready to start building? Reply and I'll kick off implementation."
-- **After execute mode**: append "Please verify the result in your project directory."
-- **On timeout (30 min)**: tell the user the task was too large and suggest splitting it
+1. **First message**: one-line confirmation only → `"✅ Claude Code finished · [project name]"`
+2. **Body chunks**: split the summary by section headings (`##`, `###`) or at natural paragraph breaks — whichever comes first. Each chunk must be **≤ 500 characters**. If a single paragraph exceeds 500 characters, break it at the nearest sentence boundary.
+3. **Last message**: footer line only →
+   - discuss mode: `"Ready to start building? Reply and I'll kick off implementation."`
+   - execute mode: `"Please verify the result in your project directory."`
+   - on timeout: `"⏰ Task timed out (>30 min) — please split it into smaller subtasks and retry."`
+
+Do not rewrite or expand the summary — Claude already wrote it concisely. Send each chunk verbatim.
+
+**Example** (summary has 3 sections):
+```
+message("✅ Claude Code finished · myapp")
+message("## What was done\nAdded JWT middleware to …")
+message("## Files changed\n- src/auth.ts\n- src/routes …")
+message("## Next steps\nRun `npm test` to verify …")
+message("Please verify the result in your project directory.")
+```
 
 ---
 

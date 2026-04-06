@@ -2,10 +2,13 @@
 # claw2claude/scripts/launch.sh
 #
 # Usage:
-#   launch.sh <project_path> discuss    "<prompt>"  # Discussion/planning mode (read-only)
-#   launch.sh <project_path> execute    "<prompt>"  # Execution mode (auto-approve all permissions)
-#   launch.sh <project_path> continue   "<prompt>"  # Resume the previous session
-#   launch.sh <project_path> background "<prompt>"  # Run in background, return immediately
+#   launch.sh <project_path> discuss    "<prompt>" [<session_key>]
+#   launch.sh <project_path> execute    "<prompt>" [<session_key>]
+#   launch.sh <project_path> continue   "<prompt>" [<session_key>]
+#   launch.sh <project_path> background "<prompt>" [<session_key>]
+#
+# session_key: OpenClaw session key for result delivery (e.g. "discord:123:456").
+#              Defaults to "main". Must match the channel the user is chatting in.
 
 set -euo pipefail
 
@@ -13,6 +16,7 @@ SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_PATH="${1:-}"
 MODE="${2:-execute}"
 PROMPT="${3:-}"
+SESSION_KEY="${4:-}"
 
 SESSION_FILE=".openclaw-claude-session.json"
 TMPDIR_BASE="/tmp/claw2claude-$$"
@@ -67,6 +71,20 @@ else
   fi
 fi
 
+# ── Auto-detect session key if not provided ──────────────────────
+# launch.sh is called the moment the AI handles the user's message, so the
+# user's channel has the most recent updatedAt in sessions.json right now.
+if [[ -z "$SESSION_KEY" ]]; then
+  DETECTED_KEY=$(python3 "$SKILL_DIR/scripts/find_session.py" 2>/dev/null || true)
+  if [[ -n "$DETECTED_KEY" ]]; then
+    SESSION_KEY="$DETECTED_KEY"
+    echo "🔑 Auto-detected session key: $SESSION_KEY" >&2
+  else
+    SESSION_KEY="main"
+    echo "⚠️  Could not detect session key — falling back to 'main'" >&2
+  fi
+fi
+
 # ── Check token health ───────────────────────────────────────────
 python3 "$SKILL_DIR/scripts/check_token.py" || true
 
@@ -106,6 +124,7 @@ if [[ "$MODE" == "background" ]]; then
     --pid "$BG_PID" \
     --log "$BG_LOG" \
     --project "$PROJECT_NAME" \
+    --session-key "$SESSION_KEY" \
     > "${BG_LOG%.log}-heartbeat.log" 2>&1 &
 
   echo "✅ Background task started (PID=$BG_PID) — you will be notified when it completes" >&2
@@ -131,11 +150,14 @@ case "$MODE" in
   execute)
     CLAUDE_ARGS+=(--dangerously-skip-permissions)
     echo "⚡ Execute mode (all permission prompts skipped)" >&2
-    # Auto-resume only when transitioning from a prior discuss session
-    # (execute→execute starts fresh; only discuss→execute carries context)
-    if [[ -n "$LAST_SESSION_ID" && "$LAST_MODE" == "discuss" ]]; then
+    # Always resume the previous session if one exists (discuss or execute)
+    if [[ -n "$LAST_SESSION_ID" ]]; then
       CLAUDE_ARGS+=(--resume "$LAST_SESSION_ID")
-      echo "🔗 Carrying over discussion context (session: ${LAST_SESSION_ID:0:8}...)" >&2
+      if [[ "$LAST_MODE" == "discuss" ]]; then
+        echo "🔗 Carrying over discussion context (session: ${LAST_SESSION_ID:0:8}...)" >&2
+      else
+        echo "🔗 Resuming previous execute session (${LAST_SESSION_ID:0:8}...)" >&2
+      fi
     fi
     ;;
 
@@ -158,7 +180,13 @@ SUMMARY_INSTRUCTION='
 IMPORTANT: At the very end of your response, write a section in this exact format:
 
 ---CHAT_SUMMARY_START---
-(a concise summary in ≤400 words of the key points, questions, or decisions from this session — written to be sent directly to the user in a chat message, no code blocks)
+Write a thorough summary (200–500 words) of this session to be sent directly to the user as a chat message.
+
+Rules:
+1. Language: match the language the user used in their instruction. You may reason in any language, but the summary must be written in the same language as the user'\''s request.
+2. Length: do not over-compress. Cover all meaningful outcomes — be specific, not vague.
+3. Code & files: if any files were created or modified, list them explicitly (filename + one-line description of what changed or was added).
+4. Structure: use short paragraphs or bullet points for readability. No fenced code blocks.
 ---CHAT_SUMMARY_END---'
 
 # ── Append prompt ────────────────────────────────────────────────
@@ -194,21 +222,42 @@ fi
 
 # Full output is saved to this log file; stdout only returns a summary
 RUN_LOG="${PROJECT_PATH}/.claude-last-run.log"
+NOTIFY_FILE="${PROJECT_PATH}/.claude-notify.json"
 
-# Run Claude and pipe output through the stream parser
+# Remove any stale notify file from a previous run
+rm -f "$NOTIFY_FILE"
+
+# ── Start notifier in background ─────────────────────────────────
+# The notifier polls for NOTIFY_FILE (written by parse_stream.py when Claude
+# finishes) and sends chunked results directly to the OpenClaw gateway.
+# It watches $$ (this shell's PID) so it can detect abnormal exits too.
+NOTIFIER_LOG="${PROJECT_PATH}/.claude-notifier.log"
+nohup python3 "$SKILL_DIR/scripts/notifier.py" \
+  --notify-file "$NOTIFY_FILE" \
+  --project     "$PROJECT_NAME" \
+  --session-key "$SESSION_KEY" \
+  --watcher-pid $$ \
+  --max-wait    $((TIMEOUT_SEC + 120)) \
+  > "$NOTIFIER_LOG" 2>&1 &
+NOTIFIER_PID=$!
+echo "🔔 Notifier started (PID=$NOTIFIER_PID)" >&2
+
+# ── Run Claude and pipe output through the stream parser ──────────
 set +e
 if [ ${#CMD_PREFIX[@]} -gt 0 ]; then
   "${CMD_PREFIX[@]}" claude "${CLAUDE_ARGS[@]}" 2>&1 | python3 -u "$SKILL_DIR/scripts/parse_stream.py" \
-    --mode "$EFFECTIVE_MODE" \
-    --project "$PROJECT_NAME" \
+    --mode       "$EFFECTIVE_MODE" \
+    --project    "$PROJECT_NAME" \
     --session-out "$SESSION_ID_FILE" \
-    --log-out "$RUN_LOG"
+    --notify-out "$NOTIFY_FILE" \
+    --log-out    "$RUN_LOG"
 else
   claude "${CLAUDE_ARGS[@]}" 2>&1 | python3 -u "$SKILL_DIR/scripts/parse_stream.py" \
-    --mode "$EFFECTIVE_MODE" \
-    --project "$PROJECT_NAME" \
+    --mode       "$EFFECTIVE_MODE" \
+    --project    "$PROJECT_NAME" \
     --session-out "$SESSION_ID_FILE" \
-    --log-out "$RUN_LOG"
+    --notify-out "$NOTIFY_FILE" \
+    --log-out    "$RUN_LOG"
 fi
 PIPE_STATUS=("${PIPESTATUS[@]}")
 set -e

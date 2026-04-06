@@ -20,6 +20,8 @@ parser.add_argument("--mode",        default="execute")
 parser.add_argument("--session-out", required=True)
 parser.add_argument("--project",     default="")
 parser.add_argument("--log-out",     default="")
+parser.add_argument("--notify-out",  default="",
+                    help="Path to write completion JSON for notifier.py")
 args = parser.parse_args()
 
 PROJECT_PART = f" · {args.project}" if args.project else ""
@@ -122,6 +124,23 @@ print(footer, flush=True)
 
 if args.log_out:
     print(f"\n📄 Full log: {args.log_out}", flush=True)
+
+# ── Write notify JSON for notifier.py ────────────────────────────
+if args.notify_out:
+    notify_data = {
+        "status":   "error" if has_error else "done",
+        "mode":     args.mode,
+        "project":  args.project,
+        "summary":  summary if summary else combined.strip()[-2000:],
+        "log_path": args.log_out,
+    }
+    tmp = args.notify_out + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(notify_data, f, ensure_ascii=False)
+        os.replace(tmp, args.notify_out)
+    except OSError as e:
+        print(f"⚠️  Could not write notify file: {e}", file=sys.stderr)
 
 # ── Write session ID atomically ────────────────────────────────────
 if session_id:
