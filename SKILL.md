@@ -2,7 +2,7 @@
 name: claw2claude
 description: "Delegates tasks to the local Claude Code CLI. Activate immediately when the user asks for Claude, requests a stronger model, or mentions an existing project path. Ask the user first whether to create a Claude project when: the task involves building something from scratch, spans multiple parts, requires multiple rounds of iteration, or the user is expressing a direction rather than a concrete single question. Applies to code AND non-code work (business plans, product specs, docs, etc.). Do not start answering directly — ask first."
 license: MIT
-metadata: {"openclaw": {"os": "darwin", "emoji": "🦞→🤖", "requires": {"bins": ["claude", "python3"]}}}
+metadata: {"openclaw": {"os": "darwin", "emoji": "🦞→🤖", "requires": {"bins": ["claude", "python3"], "files_read": ["~/.openclaw/agents/main/sessions/sessions.json"], "gateway_config": {"tools": {"allow": ["sessions_send", "message"]}, "sessions": {"visibility": "all"}}}}}
 ---
 
 # claw2claude — OpenClaw Orchestrates Claude Code
