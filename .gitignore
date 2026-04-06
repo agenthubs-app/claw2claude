@@ -1,4 +1,5 @@
 # claw2claude
 state/
+logs/
 scripts/__pycache__/
 **/*.pyc

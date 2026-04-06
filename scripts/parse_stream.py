@@ -86,7 +86,12 @@ for line in sys.stdin:
     elif etype == "result":
         if event.get("is_error"):
             has_error = True
-            footer = f"\n\n❌ Error: {event.get('error', 'unknown error')}"
+            err = event.get("error", "unknown error")
+            if isinstance(err, dict):
+                err = err.get("message", str(err))
+            elif not isinstance(err, str):
+                err = str(err)
+            footer = f"\n\n❌ Error: {err}"
         else:
             turns  = event.get("num_turns", 0)
             label  = "Discussion complete" if args.mode == "discuss" else "Execution complete"

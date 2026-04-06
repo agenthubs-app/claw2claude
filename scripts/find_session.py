@@ -33,11 +33,16 @@ openclaw_dir = Path(args.config).parent
 sessions_file = openclaw_dir / "agents" / args.agent / "sessions" / "sessions.json"
 
 if not sessions_file.exists():
+    print(f"⚠️  Sessions file not found: {sessions_file}", file=sys.stderr)
     sys.exit(1)
 
 try:
     data = json.loads(sessions_file.read_text(encoding="utf-8"))
-except Exception:
+except json.JSONDecodeError as e:
+    print(f"⚠️  Corrupted sessions file: {e}", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"⚠️  Failed to read sessions file: {e}", file=sys.stderr)
     sys.exit(1)
 
 candidates = []

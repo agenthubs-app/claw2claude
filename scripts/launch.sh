@@ -21,6 +21,26 @@ SESSION_KEY="${4:-}"
 SESSION_FILE=".openclaw-claude-session.json"
 TMPDIR_BASE="/tmp/claw2claude-$$"
 TIMEOUT_SEC=1800  # 30 minutes
+LOGS_DIR="$SKILL_DIR/logs"
+mkdir -p "$LOGS_DIR"
+LOG_FILE="$LOGS_DIR/$(date +%Y-%m).log"
+
+# ── Logging helper ───────────────────────────────────────────────
+log_entry() {
+  # Append a JSON line to the monthly log file.
+  # Args: <status> [<claude_session_id>]
+  local status="${1:-}"
+  local claude_session="${2:-}"
+  python3 "$SKILL_DIR/scripts/log_entry.py" \
+    --log-file    "$LOG_FILE" \
+    --status      "$status" \
+    --project     "$PROJECT_PATH" \
+    --mode        "$MODE" \
+    --session-key "$SESSION_KEY" \
+    --claude-session "$claude_session" \
+    --prompt      "${PROMPT:0:200}" \
+    2>/dev/null || true   # never let logging crash the main flow
+}
 
 # ── Validate dependencies ────────────────────────────────────────
 if ! command -v claude &>/dev/null; then
@@ -45,7 +65,11 @@ fi
 PROJECT_PATH="${PROJECT_PATH/#\~/$HOME}"
 
 # ── Cleanup on exit ──────────────────────────────────────────────
+NOTIFIER_PID_FILE=""
 cleanup() {
+  # Do NOT kill the notifier here — it is a nohup background process that must
+  # outlive launch.sh to deliver results after Claude finishes.
+  # Only clean up temp files.
   rm -rf "$TMPDIR_BASE"
 }
 trap cleanup EXIT
@@ -71,10 +95,21 @@ else
   fi
 fi
 
-# ── Auto-detect session key if not provided ──────────────────────
-# launch.sh is called the moment the AI handles the user's message, so the
-# user's channel has the most recent updatedAt in sessions.json right now.
-if [[ -z "$SESSION_KEY" ]]; then
+# ── Validate and auto-detect session key ─────────────────────────
+# A valid session key looks like: agent:<agent>:<platform>:<type>:<id>
+# If $4 was provided but contains prompt content (e.g. newlines caused arg
+# misparse), it won't match this pattern — discard it and auto-detect instead.
+SESSION_KEY_VALID=false
+if [[ "$SESSION_KEY" =~ ^agent:[^:]+:[^:]+:[^:]+:.+$ ]]; then
+  SESSION_KEY_VALID=true
+fi
+
+if [[ "$SESSION_KEY_VALID" != "true" ]]; then
+  if [[ -n "$SESSION_KEY" ]]; then
+    echo "⚠️  SESSION_KEY looks malformed ('${SESSION_KEY:0:40}…') — ignoring and auto-detecting" >&2
+  fi
+  # launch.sh runs the moment the AI handles the user's message, so the user's
+  # channel has the most recent updatedAt in sessions.json right now.
   DETECTED_KEY=$(python3 "$SKILL_DIR/scripts/find_session.py" 2>/dev/null || true)
   if [[ -n "$DETECTED_KEY" ]]; then
     SESSION_KEY="$DETECTED_KEY"
@@ -83,6 +118,8 @@ if [[ -z "$SESSION_KEY" ]]; then
     SESSION_KEY="main"
     echo "⚠️  Could not detect session key — falling back to 'main'" >&2
   fi
+else
+  echo "🔑 Using provided session key: $SESSION_KEY" >&2
 fi
 
 # ── Check token health ───────────────────────────────────────────
@@ -206,6 +243,9 @@ elif [[ "$MODE" == "continue" ]]; then
   fi
 fi
 
+# ── Log invocation start ─────────────────────────────────────────
+log_entry "started" "$LAST_SESSION_ID"
+
 # ── Launch Claude ────────────────────────────────────────────────
 echo "🤖 Starting Claude Code..." >&2
 echo "📍 $PROJECT_PATH" >&2
@@ -227,11 +267,22 @@ NOTIFY_FILE="${PROJECT_PATH}/.claude-notify.json"
 # Remove any stale notify file from a previous run
 rm -f "$NOTIFY_FILE"
 
+# Kill any stale notifier from a previous run of this project
+NOTIFIER_PID_PERSIST="${PROJECT_PATH}/.claude-notifier.pid"
+if [[ -f "$NOTIFIER_PID_PERSIST" ]]; then
+  STALE_PID=$(cat "$NOTIFIER_PID_PERSIST" 2>/dev/null || true)
+  if [[ -n "$STALE_PID" ]]; then
+    kill "$STALE_PID" 2>/dev/null && echo "🧹 Killed stale notifier (PID=$STALE_PID)" >&2 || true
+  fi
+  rm -f "$NOTIFIER_PID_PERSIST"
+fi
+
 # ── Start notifier in background ─────────────────────────────────
 # The notifier polls for NOTIFY_FILE (written by parse_stream.py when Claude
 # finishes) and sends chunked results directly to the OpenClaw gateway.
 # It watches $$ (this shell's PID) so it can detect abnormal exits too.
 NOTIFIER_LOG="${PROJECT_PATH}/.claude-notifier.log"
+NOTIFIER_PID_FILE="$TMPDIR_BASE/notifier_pid"
 nohup python3 "$SKILL_DIR/scripts/notifier.py" \
   --notify-file "$NOTIFY_FILE" \
   --project     "$PROJECT_NAME" \
@@ -240,6 +291,8 @@ nohup python3 "$SKILL_DIR/scripts/notifier.py" \
   --max-wait    $((TIMEOUT_SEC + 120)) \
   > "$NOTIFIER_LOG" 2>&1 &
 NOTIFIER_PID=$!
+echo "$NOTIFIER_PID" > "$NOTIFIER_PID_FILE"
+echo "$NOTIFIER_PID" > "$NOTIFIER_PID_PERSIST"
 echo "🔔 Notifier started (PID=$NOTIFIER_PID)" >&2
 
 # ── Run Claude and pipe output through the stream parser ──────────
@@ -273,10 +326,28 @@ fi
 if [[ "$CLAUDE_RAW_EXIT" -ne 124 ]] && [[ -f "$SESSION_ID_FILE" ]]; then
   NEW_SESSION_ID=$(cat "$SESSION_ID_FILE")
   if [[ -n "$NEW_SESSION_ID" ]]; then
-    python3 "$SKILL_DIR/scripts/write_session.py" \
-      "$SESSION_FILE" "$NEW_SESSION_ID" "$EFFECTIVE_MODE" "$PROJECT_PATH"
-    echo "💾 Session saved (${NEW_SESSION_ID:0:8}...)" >&2
+    if python3 "$SKILL_DIR/scripts/write_session.py" \
+      "$SESSION_FILE" "$NEW_SESSION_ID" "$EFFECTIVE_MODE" "$PROJECT_PATH"; then
+      echo "💾 Session saved (${NEW_SESSION_ID:0:8}...)" >&2
+    else
+      echo "⚠️  Failed to save session state — next run will start a new session" >&2
+    fi
   fi
+fi
+
+# Clean up persisted notifier PID (notifier exits on its own after delivery)
+rm -f "$NOTIFIER_PID_PERSIST"
+
+# ── Log completion ────────────────────────────────────────────────
+FINAL_SESSION_ID=""
+[[ -f "$SESSION_ID_FILE" ]] && FINAL_SESSION_ID=$(cat "$SESSION_ID_FILE" 2>/dev/null || true)
+
+if [[ "$CLAUDE_RAW_EXIT" -eq 124 ]]; then
+  log_entry "timeout" "$FINAL_SESSION_ID"
+elif [[ "$CLAUDE_RAW_EXIT" -eq 0 && "$PARSER_EXIT" -eq 0 ]]; then
+  log_entry "done" "$FINAL_SESSION_ID"
+else
+  log_entry "error" "$FINAL_SESSION_ID"
 fi
 
 [[ "$CLAUDE_RAW_EXIT" -eq 0 && "$PARSER_EXIT" -eq 0 ]] && exit 0 || exit 1

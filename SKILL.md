@@ -2,7 +2,7 @@
 name: claw2claude
 description: "Delegates tasks to the local Claude Code CLI. Activate immediately when the user asks for Claude, requests a stronger model, or mentions an existing project path. Ask the user first whether to create a Claude project when: the task involves building something from scratch, spans multiple parts, requires multiple rounds of iteration, or the user is expressing a direction rather than a concrete single question. Applies to code AND non-code work (business plans, product specs, docs, etc.). Do not start answering directly — ask first."
 license: MIT
-metadata: {"openclaw": {"os": "darwin", "emoji": "🦞→🤖", "requires": {"bins": ["claude", "python3"], "files_read": ["~/.openclaw/agents/main/sessions/sessions.json"], "gateway_config": {"tools": {"allow": ["sessions_send", "message"]}, "sessions": {"visibility": "all"}}}}}
+metadata: {"openclaw": {"os": "darwin", "emoji": "🦞→🤖", "requires": {"bins": ["claude", "python3"]}}}
 ---
 
 # claw2claude — OpenClaw Orchestrates Claude Code
@@ -143,13 +143,14 @@ Requirements:
 
 Then run with the `exec` tool:
 ```bash
-"$SKILL_DIR/scripts/launch.sh" "<project_path>" "<mode>" "<prompt>" "<session_key>"
+"$SKILL_DIR/scripts/launch.sh" "<project_path>" "<mode>" "<prompt>"
 ```
 
 - `project_path`: absolute path — the script creates the directory and runs `git init` automatically
 - `mode`: `discuss` / `execute` / `continue` / `background`
 - `prompt`: the structured instruction built in Step 3. If the prompt contains double quotes, escape them as `\"` or wrap in single quotes.
-- `session_key`: **optional** — omit it and `launch.sh` will auto-detect the correct channel by finding the most recently active session in the sessions registry. Only pass it explicitly if auto-detection picks the wrong channel.
+
+> ⚠️ **Never pass a 4th argument.** The session key is always auto-detected by `launch.sh`. Passing it manually risks arg-parse corruption: when the prompt contains newlines or special characters, the shell may miscount positional arguments and assign prompt content to `$4`, sending results to the wrong channel.
 
 **background mode**: the script returns immediately; Claude runs in the background. Tell the user:
 `"🚀 Claude Code is running in the background. You'll be notified automatically when it's done."`

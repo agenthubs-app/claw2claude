@@ -264,6 +264,9 @@ def split_chunks(text: str, max_chars: int = MAX_CHUNK) -> list:
 def deliver(data: dict):
     project  = args.project
     mode     = data.get("mode", "execute")
+    if mode not in ("discuss", "execute"):
+        print(f"[notifier] ⚠️  Unknown mode '{mode}' — assuming execute", flush=True)
+        mode = "execute"
     summary  = data.get("summary", "").strip()
     status   = data.get("status", "done")
     log_path = data.get("log_path", "")
@@ -355,16 +358,21 @@ while time.time() < deadline:
     # Check if the watcher process (launch.sh) has exited
     pid_alive = is_running(args.watcher_pid)
     if last_pid_alive and not pid_alive:
-        # Launcher just died — give parse_stream.py one more poll cycle to
-        # flush its notify file before declaring an error
-        print(f"[notifier] Watcher PID={args.watcher_pid} exited — waiting one more cycle", flush=True)
-        time.sleep(POLL_INTERVAL)
+        # Launcher just died. parse_stream.py may still be writing the notify
+        # file (it runs inside the pipe, so it outlives launch.sh by a moment).
+        # Keep polling for up to 30 seconds before giving up.
+        print(f"[notifier] Watcher PID={args.watcher_pid} exited — waiting up to 30s for notify file", flush=True)
+        grace_deadline = time.time() + 30
+        while time.time() < grace_deadline:
+            if NOTIFY_FILE.exists():
+                break
+            time.sleep(POLL_INTERVAL)
         if NOTIFY_FILE.exists():
-            # File appeared in the last window — loop back to process it
+            # Let the main loop handle it on the next iteration
             last_pid_alive = pid_alive
             continue
-        # Truly gone without a file
-        print("[notifier] No notify file after launcher exit — sending error notice", flush=True)
+        # File never appeared — treat as crash
+        print("[notifier] No notify file after 30s grace — sending error notice", flush=True)
         deliver({
             "status":  "error",
             "mode":    "execute",

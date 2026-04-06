@@ -4,6 +4,42 @@ Bridges OpenClaw and Claude Code CLI — letting your OpenClaw AI act as an **or
 
 ---
 
+## How it works
+
+```
+User sends a message (Discord / WhatsApp / Telegram / …)
+    ↓
+OpenClaw AI reads the claw2claude skill and invokes launch.sh
+    ↓
+launch.sh auto-detects the user's active channel session
+launch.sh starts notifier.py in the background (polls every 2s)
+launch.sh starts Claude Code (claude CLI) in the project directory
+    ↓
+Claude reads/writes files, executes code, reasons through the task
+    ↓
+parse_stream.py collects Claude's stream output and writes .claude-notify.json
+    ↓
+notifier.py detects the file, splits the summary into ≤500-char chunks,
+and delivers each chunk to the user's channel via the OpenClaw message tool
+    ↓
+Session ID saved → next message resumes the same Claude session via --resume
+```
+
+---
+
+## Modes
+
+| Mode | When to use | Behaviour |
+|------|-------------|-----------|
+| `discuss` | Requirements are unclear; user wants to explore options | Claude advises, no code written |
+| `execute` | Task is clear; user wants code written or changed | Claude implements directly |
+| `continue` | Pick up where we left off | Resumes previous session, same mode |
+| `background` | User doesn't want to wait for the result | Runs detached; notified on completion |
+
+**Session continuity:** `execute` mode always resumes the last session (whether it was `discuss` or `execute`), keeping all messages in one continuous Claude conversation per project.
+
+---
+
 ## Requirements
 
 - `claude` CLI on PATH — [Claude Code](https://claude.ai/code)
@@ -22,9 +58,9 @@ Then apply the required `openclaw.json` changes below and restart the gateway.
 
 ---
 
-## Configuration
+## Required openclaw.json changes
 
-Two settings must be added to `~/.openclaw/openclaw.json`:
+Two settings must be added. Open `~/.openclaw/openclaw.json` and apply:
 
 ### 1. Allow the `message` tool through the gateway
 
@@ -82,66 +118,6 @@ openclaw gateway restart
 
 ---
 
-## Adding usage rules to your USER.md
-
-Add this block to your agent's `USER.md` to control when and how the skill fires:
-
-```markdown
-## Tool routing with claw2claude
-
-- **Route code tasks to Claude Code** — for any task involving code (reading,
-  reviewing, writing, refactoring, architecture design), use the `claw2claude`
-  skill to delegate to the local Claude Code CLI. Claude Code has direct
-  filesystem access and is purpose-built for these tasks.
-
-- **Check in before starting large projects** — when the user proposes a
-  substantial new project (software, business plan, long-form document, etc.),
-  ask first: "This looks like a multi-round project — would you like me to set
-  up a Claude Code project directory?" Delegate only after the user confirms.
-
-- For tasks within `claw2claude`'s scope, act as a coordinator: clarify the
-  request, choose the right mode (discuss / execute), and deliver the result.
-  Do not duplicate work that Claude Code will handle.
-```
-
----
-
-## How it works
-
-```
-User sends a message (Discord / WhatsApp / Telegram / …)
-    ↓
-OpenClaw AI reads the claw2claude skill and invokes launch.sh
-    ↓
-launch.sh auto-detects the user's active channel session
-launch.sh starts notifier.py in the background (polls every 2s)
-launch.sh starts Claude Code (claude CLI) in the project directory
-    ↓
-Claude reads/writes files, executes code, reasons through the task
-    ↓
-parse_stream.py collects Claude's stream output and writes .claude-notify.json
-    ↓
-notifier.py detects the file, splits the summary into ≤500-char chunks,
-and delivers each chunk to the user's channel via the OpenClaw message tool
-    ↓
-Session ID saved → next message resumes the same Claude session via --resume
-```
-
----
-
-## Modes
-
-| Mode | When to use | Behaviour |
-|------|-------------|-----------|
-| `discuss` | Requirements are unclear; user wants to explore options | Claude advises, no code written |
-| `execute` | Task is clear; user wants code written or changed | Claude implements directly |
-| `continue` | Pick up where we left off | Resumes previous session, same mode |
-| `background` | User doesn't want to wait for the result | Runs detached; notified on completion |
-
-**Session continuity:** `execute` mode always resumes the last session (whether it was `discuss` or `execute`), keeping all messages in one continuous Claude conversation per project.
-
----
-
 ## Delivery pipeline
 
 Results are delivered by `notifier.py`, which runs in the background while Claude works. Priority order:
@@ -187,3 +163,27 @@ This is used by `launch.sh` to resume the correct Claude session on the next inv
 | `heartbeat.py` | Used in `background` mode only. Monitors the background Claude PID and notifies when done. |
 | `check_token.py` | Checks API token health before Claude starts. |
 | `read_session.py` / `write_session.py` | Atomic read/write helpers for `.openclaw-claude-session.json`. |
+
+---
+
+## Adding usage rules to your USER.md
+
+Add this block to your agent's `USER.md` to control when and how the skill fires:
+
+```markdown
+## Tool routing with claw2claude
+
+- **Route code tasks to Claude Code** — for any task involving code (reading,
+  reviewing, writing, refactoring, architecture design), use the `claw2claude`
+  skill to delegate to the local Claude Code CLI. Claude Code has direct
+  filesystem access and is purpose-built for these tasks.
+
+- **Check in before starting large projects** — when the user proposes a
+  substantial new project (software, business plan, long-form document, etc.),
+  ask first: "This looks like a multi-round project — would you like me to set
+  up a Claude Code project directory?" Delegate only after the user confirms.
+
+- For tasks within `claw2claude`'s scope, act as a coordinator: clarify the
+  request, choose the right mode (discuss / execute), and deliver the result.
+  Do not duplicate work that Claude Code will handle.
+```
