@@ -2,13 +2,95 @@
 name: claw2claude
 description: "Delegates tasks to the local Claude Code CLI. Activate immediately when the user asks for Claude, requests a stronger model, or mentions an existing project path. Ask the user first whether to create a Claude project when: the task involves building something from scratch, spans multiple parts, requires multiple rounds of iteration, or the user is expressing a direction rather than a concrete single question. Applies to code AND non-code work (business plans, product specs, docs, etc.). Do not start answering directly — ask first."
 license: MIT
-metadata: {"openclaw": {"os": "darwin", "emoji": "🦞→🤖", "requires": {"bins": ["claude", "python3"]}}}
+metadata:
+  openclaw:
+    os: darwin
+    emoji: "🦞→🤖"
+    requires:
+      bins:
+        - claude
+        - python3
+    reads:
+      - ~/.openclaw/openclaw.json          # gateway port + auth token for result delivery
+      - ~/.openclaw/credentials/           # JWT token health check (read-only, warnings only)
+      - ~/.openclaw/agents/main/sessions/sessions.json  # auto-detect user's active channel
+    writes:
+      - <project_path>/.openclaw-claude-session.json    # session state (git-ignored)
+      - <project_path>/.claude-last-run.log             # full Claude output log
+      - <project_path>/.claude-notify.json              # IPC file between Claude and notifier
+      - <skill_dir>/logs/YYYY-MM.log                    # monthly invocation log
+    background_processes:
+      - notifier.py    # polls for Claude completion, delivers chunked results via gateway; exits automatically on delivery
+      - heartbeat.py   # used in background mode only; monitors Claude PID, notifies on completion
+    gateway_tools_used:
+      - message        # sends result chunks to the user's channel
+    config_changes_required:
+      - gateway.tools.allow: ["message"]          # allow notifier to send messages from outside an AI turn
+      - tools.sessions.visibility: "all"          # allow notifier to message across sessions
+    permissions:
+      claude_flags: "--dangerously-skip-permissions"  # Claude runs fully automated; no interactive prompts
+      rationale: >-
+        Required for non-interactive use. Claude Code is triggered by a chat
+        message (not a terminal session) and cannot present permission prompts
+        to the user. All file/tool access is bounded to the specified project
+        directory; no system-level writes occur.
 ---
 
 # claw2claude — OpenClaw Orchestrates Claude Code
 
 Delegates the user's task to the local `claude` CLI.
 **You (OpenClaw AI) are the orchestrator. Claude Code is the executor.**
+
+---
+
+## Security & Transparency
+
+This skill has broader-than-average system access because it bridges two runtimes (OpenClaw and Claude Code). Everything it does is documented here and in the metadata above.
+
+### What this skill accesses
+
+| Resource | Why | Access type |
+|----------|-----|-------------|
+| `~/.openclaw/openclaw.json` | Gateway port + auth token, so `notifier.py` can POST results back to the user's channel | Read-only |
+| `~/.openclaw/credentials/` | JWT expiry check before Claude starts — warns if token is stale; never modifies | Read-only |
+| `~/.openclaw/agents/main/sessions/sessions.json` | Find the user's most recently active channel so results go to the right place | Read-only |
+| `<project_path>/` | Claude Code working directory; all file changes are intentional outputs of the delegated task | Read + write |
+| `<skill_dir>/logs/` | Monthly invocation log (timestamp, mode, project, exit status, no prompt content beyond first 200 chars) | Write |
+
+### Background processes
+
+Two scripts run detached from the main AI turn:
+
+- **`notifier.py`** — starts when Claude starts; polls every 2 s for Claude's completion file; sends chunked results to the user's channel via the OpenClaw gateway `message` tool; **exits immediately after delivery** (or after 35 min if Claude never finishes).
+- **`heartbeat.py`** — used in `background` mode only; monitors the background Claude PID; sends a notification when Claude exits. Not used in `discuss`, `execute`, or `continue` modes.
+
+Neither process modifies OpenClaw config, reads credentials a second time, or persists beyond the task lifecycle.
+
+### `--dangerously-skip-permissions` usage
+
+All Claude sessions are launched with this flag. It is necessary because Claude Code is invoked non-interactively (triggered by a chat message, not a terminal), so it cannot display permission prompts. The flag's scope is limited to the project directory — Claude is not given broader system access than a normal Claude Code session would have.
+
+If you prefer interactive permission prompts, run Claude Code directly in a terminal rather than through this skill.
+
+### Required `openclaw.json` changes
+
+Two config changes must be applied before the skill works. These are opt-in — the skill cannot make these changes itself:
+
+```json
+{
+  "gateway": {
+    "tools": { "allow": ["message"] }
+  },
+  "tools": {
+    "sessions": { "visibility": "all" }
+  }
+}
+```
+
+- **`gateway.tools.allow: ["message"]`** — lets `notifier.py` call the gateway `message` tool from outside an AI turn to deliver results
+- **`tools.sessions.visibility: "all"`** — lets the notifier target the user's channel session (which differs from the system session running Claude)
+
+See README.md for the full setup guide.
 
 ---
 
